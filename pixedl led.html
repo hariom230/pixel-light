@@ -199,7 +199,7 @@
 
         <!-- Schedule Information -->
         <div class="schedule-info">
-            Auto Schedule: <strong>18:00 ON</strong> | <strong>01:00 OFF</strong>
+            Auto Schedule: <strong>18:00 ON</strong> | <strong>06:00 OFF</strong>
         </div>
     </div>
 
@@ -218,8 +218,19 @@
 
         let client = null;
         let boardTimeout = null;
+        let startupGracePeriod = true; // Prevents stale retained messages from showing online at boot
+
+        // Force board UI to strictly Offline at startup
+        function setBoardOffline() {
+            document.getElementById("board-dot").classList.remove("active");
+            document.getElementById("board-text").innerText = "Offline";
+            document.getElementById("board-time-val").innerText = "--:--:--";
+        }
 
         function connectMQTT() {
+            setBoardOffline();
+            startupGracePeriod = true;
+
             client = new Paho.MQTT.Client(brokerHost, Number(brokerPort), clientId);
 
             client.onConnectionLost = onConnectionLost;
@@ -233,6 +244,11 @@
                 onSuccess: onConnect,
                 onFailure: onFailure
             });
+
+            // After 3 seconds, lift grace period so future missed heartbeats trigger offline state
+            setTimeout(() => {
+                startupGracePeriod = false;
+            }, 3000);
         }
 
         function onConnect() {
@@ -250,6 +266,7 @@
             console.error("Connection failed:", message.errorMessage);
             document.getElementById("broker-dot").classList.remove("active");
             document.getElementById("broker-text").innerText = "Failed";
+            setBoardOffline();
             setTimeout(connectMQTT, 5000); // Retry after 5s
         }
 
@@ -257,9 +274,7 @@
             console.warn("Connection lost:", responseObject.errorMessage);
             document.getElementById("broker-dot").classList.remove("active");
             document.getElementById("broker-text").innerText = "Disconnected";
-            document.getElementById("board-dot").classList.remove("active");
-            document.getElementById("board-text").innerText = "Offline";
-            document.getElementById("board-time-val").innerText = "--:--:--";
+            setBoardOffline();
             setTimeout(connectMQTT, 5000); // Retry after 5s
         }
 
@@ -282,19 +297,26 @@
                 let boardText = document.getElementById("board-text");
                 
                 if (boardState === "ONLINE") {
+                    // Ignore cached retained messages if board was actually offline when page opened
+                    if (startupGracePeriod && message.retained) {
+                        console.log("Ignored stale retained ONLINE message.");
+                        return;
+                    }
+
                     boardDot.classList.add("active");
                     boardText.innerText = "Online";
 
-                    // If no heartbeat arrives for 25 seconds, mark board offline
+                    // If no heartbeat arrives for 12 seconds, mark board offline
                     clearTimeout(boardTimeout);
                     boardTimeout = setTimeout(() => {
-                        boardDot.classList.remove("active");
-                        boardText.innerText = "Offline";
-                        document.getElementById("board-time-val").innerText = "--:--:--";
-                    }, 25000);
+                        setBoardOffline();
+                    }, 12000);
+                } else if (boardState === "OFFLINE") {
+                    setBoardOffline();
                 }
             }
             else if (message.destinationName === topicTime) {
+                if (startupGracePeriod && message.retained) return;
                 let timeStr = message.payloadString;
                 document.getElementById("board-time-val").innerText = timeStr;
             }
